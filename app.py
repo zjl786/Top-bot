@@ -1,88 +1,87 @@
 import os
-import aiohttp
 import asyncio
+import aiohttp
 from telegram import Bot
 from dotenv import load_dotenv
 
-# 加载环境变量
 load_dotenv()
 
-CMC_API_KEY = os.getenv("CMC_API_KEY")
+CMC_API_KEY = os.getenv("COINMARKETCAP_API_KEY")
 TELE_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-BASE_URL = "https://pro-api.coinmarketcap.com/v1"
-
 bot = Bot(token=TELE_TOKEN)
 
-# 数字缩写格式化函数
-def format_number(num):
-    abs_num = abs(num)
-    if abs_num >= 1_000_000_000_000:
-        return f"{num/1_000_000_000_000:.2f}T"
-    elif abs_num >= 1_000_000_000:
-        return f"{num/1_000_000_000:.2f}B"
-    elif abs_num >= 1_000_000:
-        return f"{num/1_000_000:.2f}M"
-    elif abs_num >= 1_000:
-        return f"{num/1_000:.2f}K"
+BASE_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+STABLECOINS = {"USDT", "USDC", "FDUSD", "DAI", "BUSD", "TUSD", "UST", "USDP", "GUSD", "PAX"}
+
+HEADERS = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+
+def format_amount(amount: float) -> str:
+    """将数值转换为 k/M/B 格式"""
+    abs_amount = abs(amount)
+    if abs_amount >= 1_000_000_000:
+        return f"${amount/1_000_000_000:.2f}B"
+    elif abs_amount >= 1_000_000:
+        return f"${amount/1_000_000:.2f}M"
+    elif abs_amount >= 1_000:
+        return f"${amount/1_000:.2f}k"
     else:
-        return f"{num:.2f}"
+        return f"${amount:.2f}"
 
-# 获取前100代币市场数据
-async def get_top_100():
-    url = f"{BASE_URL}/cryptocurrency/listings/latest"
-    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
-    params = {"start": 1, "limit": 100, "convert": "USD"}
-
+async def fetch_top_coins(limit=500):
+    params = {
+        "start": "1",
+        "limit": str(limit),
+        "convert": "USD"
+    }
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, params=params) as resp:
+        async with session.get(BASE_URL, headers=HEADERS, params=params) as resp:
             if resp.status != 200:
-                print("请求失败:", await resp.text())
+                print("未获取到数据", await resp.text())
                 return []
             data = await resp.json()
             return data.get("data", [])
 
-# 处理数据并发送消息
+def get_fundflow(coin):
+    """计算估算资金流入：按1小时价格变动 * 市值"""
+    # 注意：CMC API 免费计划仅提供24h涨跌，无法精确获取1小时资金流动
+    # 这里用24h % 变化和市值简单估算
+    price_change = coin.get("quote", {}).get("USD", {}).get("percent_change_24h", 0)
+    market_cap = coin.get("quote", {}).get("USD", {}).get("market_cap", 0)
+    return market_cap * price_change / 100
+
 async def fetch_and_send():
-    coins = await get_top_100()
-    if not coins:
-        print("未获取到数据")
-        return
-
+    coins = await fetch_top_coins()
     results = []
-    for coin in coins:
-        try:
-            symbol = coin["symbol"]  # 简写
-            vol_change = coin["quote"]["USD"]["volume_change_24h"]
-            volume = coin["quote"]["USD"]["volume_24h"]
-            inflow_value = volume * (vol_change / 100)  # 资金流入/流出额估算
-            results.append((symbol, inflow_value))
-        except KeyError:
-            continue
 
-    # 排序
+    for coin in coins:
+        symbol = coin.get("symbol", "")
+        if symbol.upper() in STABLECOINS:
+            continue
+        value = get_fundflow(coin)
+        results.append((symbol, value))
+
     inflow = sorted([c for c in results if c[1] > 0], key=lambda x: x[1], reverse=True)[:20]
     outflow = sorted([c for c in results if c[1] < 0], key=lambda x: x[1])[:20]
 
-    msg = "⏰ 资金净流入 TOP20 (估算资金USD)\n"
-    for i, (symbol, val) in enumerate(inflow, 1):
-        msg += f"{i}. {symbol} +${format_number(val)}\n"
+    msg = "⏰ 资金净流入 TOP20\n"
+    for i, (name, val) in enumerate(inflow, 1):
+        msg += f"{i}. {name} +{format_amount(val)}\n"
 
-    msg += "\n⏰ 资金净流出 TOP20 (估算资金USD)\n"
-    for i, (symbol, val) in enumerate(outflow, 1):
-        msg += f"{i}. {symbol} ${format_number(val)}\n"
+    msg += "\n⏰ 资金净流出 TOP20\n"
+    for i, (name, val) in enumerate(outflow, 1):
+        msg += f"{i}. {name} {format_amount(val)}\n"
 
-    await bot.send_message(chat_id=CHAT_ID, text=msg)
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+        print("已发送 Telegram 消息")
+    except Exception as e:
+        print("发送消息失败:", e)
 
-# 主循环
 async def main_loop():
     while True:
-        try:
-            await fetch_and_send()
-            print("已发送 Telegram 消息")
-        except Exception as e:
-            print("出错:", e)
+        await fetch_and_send()
         await asyncio.sleep(3600)  # 每1小时执行一次
 
 if __name__ == "__main__":
