@@ -1,175 +1,177 @@
+import os
 import asyncio
 import aiohttp
-from datetime import datetime
 from telegram import Bot
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-bot = Bot(token=BOT_TOKEN)
 
-STABLECOINS = ["usdt", "usdc", "fdusd", "usde"]
+TELE_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+bot = Bot(token=TELE_TOKEN)
+
+# 排除稳定币
+STABLECOINS = {"usdt", "usdc", "fdusd", "usde"}
+
+# 显示资金单位
+def format_amount(amount):
+    abs_amount = abs(amount)
+    if abs_amount >= 1_000_000_000:
+        return f"${amount/1_000_000_000:.2f}B"
+    elif abs_amount >= 1_000_000:
+        return f"${amount/1_000_000:.2f}M"
+    elif abs_amount >= 1_000:
+        return f"${amount/1_000:.2f}K"
+    else:
+        return f"${amount:.2f}"
 
 async def fetch_binance(session):
     url = "https://api.binance.com/api/v3/ticker/24hr"
-    results = []
     try:
         async with session.get(url) as resp:
             data = await resp.json()
-            for item in data:
-                symbol = item.get("symbol", "").lower()
-                if any(stable in symbol for stable in STABLECOINS):
-                    continue
-                volume = float(item.get("quoteVolume", 0))
-                results.append({"exchange": "binance", "symbol": symbol, "volume": volume})
+            result = {}
+            for coin in data:
+                symbol = coin["symbol"]
+                quote_vol = float(coin["quoteVolume"])
+                if symbol.endswith("USDT"):
+                    base = symbol[:-4].lower()
+                    if base not in STABLECOINS:
+                        result[base] = quote_vol
+            return result
     except Exception as e:
-        print("binance请求出错:", e)
-    return results
+        print(f"binance请求出错: {e}")
+        return {}
 
 async def fetch_okx(session):
-    urls = {
-        "spot": "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
-        "futures": "https://www.okx.com/api/v5/market/tickers?instType=FUTURES"
-    }
-    results = []
+    url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
     try:
-        for instype, url in urls.items():
-            async with session.get(url) as resp:
-                data = await resp.json()
-                for item in data.get("data", []):
-                    symbol = item.get("instId", "").lower()
-                    if any(stable in symbol for stable in STABLECOINS):
-                        continue
-                    volume = float(item.get("volCcy", 0)) * float(item.get("last", 1))
-                    results.append({"exchange": "okx", "symbol": symbol, "volume": volume})
+        async with session.get(url) as resp:
+            res = await resp.json()
+            data = res.get("data", [])
+            result = {}
+            for d in data:
+                symbol = d["instId"]
+                vol = float(d["volCcy24h"])
+                if symbol.endswith("USDT"):
+                    base = symbol[:-4].lower()
+                    if base not in STABLECOINS:
+                        result[base] = vol
+            return result
     except Exception as e:
-        print("okx请求出错:", e)
-    return results
+        print(f"okx请求出错: {e}")
+        return {}
 
-async def fetch_bybit(session):
-    urls = [
-        "https://api.bybit.com/v2/public/tickers?category=spot",
-        "https://api.bybit.com/v2/public/tickers?category=linear"
-    ]
-    results = []
+async def fetch_huobi(session):
+    url = "https://api.huobi.pro/market/tickers"
     try:
-        for url in urls:
-            async with session.get(url) as resp:
-                data = await resp.json()
-                for item in data.get("result", []):
-                    symbol = item.get("symbol", "").lower()
-                    if any(stable in symbol for stable in STABLECOINS):
-                        continue
-                    volume = float(item.get("quote_volume", 0))
-                    results.append({"exchange": "bybit", "symbol": symbol, "volume": volume})
+        async with session.get(url) as resp:
+            res = await resp.json()
+            data = res.get("data", [])
+            result = {}
+            for d in data:
+                symbol = d["symbol"]
+                quote_vol = float(d["quote-currency-volume"])
+                if symbol.endswith("usdt"):
+                    base = symbol[:-4].lower()
+                    if base not in STABLECOINS:
+                        result[base] = quote_vol
+            return result
     except Exception as e:
-        print("bybit请求出错:", e)
-    return results
-
-async def fetch_bitget(session):
-    urls = [
-        "https://api.bitget.com/api/spot/v1/market/tickers",
-        "https://api.bitget.com/api/mix/v1/market/tickers"
-    ]
-    results = []
-    try:
-        for url in urls:
-            async with session.get(url) as resp:
-                data = await resp.json()
-                for item in data.get("data", []):
-                    symbol = item.get("symbol", "").lower()
-                    if any(stable in symbol for stable in STABLECOINS):
-                        continue
-                    volume = float(item.get("quoteVol", 0))
-                    results.append({"exchange": "bitget", "symbol": symbol, "volume": volume})
-    except Exception as e:
-        print("bitget请求出错:", e)
-    return results
+        print(f"huobi请求出错: {e}")
+        return {}
 
 async def fetch_gate(session):
     url = "https://api.gateio.ws/api2/1/tickers"
-    results = []
     try:
         async with session.get(url) as resp:
             data = await resp.json()
+            result = {}
             for k, v in data.items():
-                symbol = k.lower()
-                if any(stable in symbol for stable in STABLECOINS):
-                    continue
-                volume = float(v.get("quoteVolume", 0))
-                results.append({"exchange": "gate", "symbol": symbol, "volume": volume})
+                if k.endswith("_USDT"):
+                    base = k.split("_")[0].lower()
+                    if base not in STABLECOINS:
+                        result[base] = float(v["quoteVolume"])
+            return result
     except Exception as e:
-        print("gate解析出错:", e)
-    return results
+        print(f"gate解析出错: {e}")
+        return {}
 
-async def fetch_huobi(session):
-    urls = [
-        "https://api.huobi.pro/market/tickers",
-        "https://api.hbdm.com/linear-swap-api/v1/swap_tick"
-    ]
-    results = []
+async def fetch_bybit(session):
+    # 只抓现货USDT交易对
+    url = "https://api.bybit.com/spot/quote/v1/ticker/24hr"
     try:
-        for url in urls:
-            async with session.get(url) as resp:
-                data = await resp.json()
-                for item in data.get("data", []):
-                    symbol = item.get("symbol", "").lower()
-                    if any(stable in symbol for stable in STABLECOINS):
-                        continue
-                    volume = float(item.get("quoteVolume", 0))
-                    results.append({"exchange": "huobi", "symbol": symbol, "volume": volume})
+        async with session.get(url) as resp:
+            res = await resp.json()
+            result = {}
+            for d in res.get("result", []):
+                symbol = d["symbol"]
+                quote_vol = float(d["quoteVolume"])
+                if symbol.endswith("USDT"):
+                    base = symbol[:-4].lower()
+                    if base not in STABLECOINS:
+                        result[base] = quote_vol
+            return result
     except Exception as e:
-        print("huobi请求出错:", e)
-    return results
+        print(f"bybit请求出错: {e}")
+        return {}
+
+async def fetch_bitget(session):
+    url = "https://api.bitget.com/api/spot/v1/market/tickers"
+    try:
+        async with session.get(url) as resp:
+            res = await resp.json()
+            result = {}
+            for d in res.get("data", []):
+                symbol = d["symbol"]
+                quote_vol = float(d["quoteVol"])
+                if symbol.endswith("USDT"):
+                    base = symbol[:-4].lower()
+                    if base not in STABLECOINS:
+                        result[base] = quote_vol
+            return result
+    except Exception as e:
+        print(f"bitget解析出错: {e}")
+        return {}
 
 async def fetch_all():
     async with aiohttp.ClientSession() as session:
         tasks = [
             fetch_binance(session),
             fetch_okx(session),
+            fetch_huobi(session),
+            fetch_gate(session),
             fetch_bybit(session),
             fetch_bitget(session),
-            fetch_gate(session),
-            fetch_huobi(session)
         ]
         results = await asyncio.gather(*tasks)
-        # 合并所有交易所数据
-        all_data = [item for sublist in results for item in sublist]
-        return all_data
+        # 合并资金流
+        total = {}
+        for r in results:
+            for k, v in r.items():
+                total[k] = total.get(k, 0) + v
+        return total
 
-def format_volume(v):
-    if v >= 1e9:
-        return f"${v/1e9:.2f}B"
-    if v >= 1e6:
-        return f"${v/1e6:.2f}M"
-    if v >= 1e3:
-        return f"${v/1e3:.2f}K"
-    return f"${v:.2f}"
+async def fetch_and_send():
+    data = await fetch_all()
+    if not data:
+        msg = "未获取到数据"
+    else:
+        # 按资金流排序
+        sorted_inflow = sorted(data.items(), key=lambda x: x[1], reverse=True)[:20]
+        sorted_outflow = sorted(data.items(), key=lambda x: x[1])[-20:]
+        msg = "⏰ 资金净流入 TOP20 (USDT)\n"
+        for i, (name, val) in enumerate(sorted_inflow, 1):
+            msg += f"{i}. {name.upper()} {format_amount(val)}\n"
+        msg += "\n⏰ 资金净流出 TOP20 (USDT)\n"
+        for i, (name, val) in enumerate(sorted_outflow, 1):
+            msg += f"{i}. {name.upper()} -{format_amount(val)}\n"
+    await bot.send_message(chat_id=CHAT_ID, text=msg)
 
 async def main_loop():
     while True:
-        data = await fetch_all()
-        if not data:
-            print("未获取到数据")
-            await asyncio.sleep(3600)
-            continue
-        # 按流入量排序，取前20
-        inflow = sorted(data, key=lambda x: x["volume"], reverse=True)[:20]
-        # 按流出量排序，取前20（最小 volume）
-        outflow = sorted(data, key=lambda x: x["volume"])[:20]
-
-        msg = "⏰ 资金净流入 TOP20 (USDT)\n"
-        for i, item in enumerate(inflow, 1):
-            msg += f"{i}. {item['symbol']} {format_volume(item['volume'])}\n"
-
-        msg += "\n⏰ 资金净流出 TOP20 (USDT)\n"
-        for i, item in enumerate(outflow, 1):
-            msg += f"{i}. {item['symbol']} {format_volume(item['volume'])}\n"
-
-        await bot.send_message(chat_id=CHAT_ID, text=msg)
-        print(f"已发送 Telegram 消息, 时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        await fetch_and_send()
         await asyncio.sleep(3600)  # 每1小时执行一次
 
 if __name__ == "__main__":
