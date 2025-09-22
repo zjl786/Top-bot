@@ -9,7 +9,7 @@ load_dotenv()
 API_KEY = os.getenv("AICOIN_API_KEY")
 TELE_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = "https://openapi.aicoin.com/api"  # 替换成实际接口地址
+BASE_URL = "https://open.aicoin.com/api/v2"  # 替换成实际接口地址
 
 bot = Bot(token=TELE_TOKEN)
 
