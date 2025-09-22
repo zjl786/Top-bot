@@ -1,130 +1,140 @@
+import os
 import asyncio
 import aiohttp
-import os
 from telegram import Bot
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELE_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=TELE_TOKEN)
 
-# 需要排除的稳定币
-STABLECOINS = {"USDT", "USDC", "FDUSD", "USDE", "BUSD", "DAI", "TUSD"}
+# 排除稳定币
+STABLECOINS = {"USDT","USDC","FDUSD","USDE"}
 
-# 格式化资金金额
-def format_amount(value):
-    if value >= 1e9:
-        return f"${value/1e9:,.2f}B"
-    elif value >= 1e6:
-        return f"${value/1e6:,.2f}M"
-    elif value >= 1e3:
-        return f"${value/1e3:,.2f}K"
-    else:
-        return f"${value:,.2f}"
-
-# 示例交易所 API 地址（现货+合约）
-EXCHANGES = {
-    "binance": {
-        "spot": "https://api.binance.com/api/v3/ticker/24hr",
-        "futures": "https://fapi.binance.com/fapi/v1/ticker/24hr"
+# 交易所及 API 配置
+EXCHANGES = [
+    {
+        "name": "binance",
+        "spot_url": "https://api.binance.com/api/v3/ticker/24hr",
+        "future_url": "https://fapi.binance.com/fapi/v1/ticker/24hr",
+        "spot_parser": lambda x: {"symbol": x["symbol"], "priceChange": float(x["quoteVolume"])},
+        "future_parser": lambda x: {"symbol": x["symbol"], "priceChange": float(x["quoteVolume"])}
     },
-    "okx": {
-        "spot": "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
-        "futures": "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
+    {
+        "name": "okx",
+        "spot_url": "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
+        "future_url": "https://www.okx.com/api/v5/market/tickers?instType=SWAP",
+        "spot_parser": lambda x: {"symbol": x["instId"].replace("-",""), "priceChange": float(x["volCcy24h"])},
+        "future_parser": lambda x: {"symbol": x["instId"].replace("-",""), "priceChange": float(x["volCcy24h"])}
     },
-    "bybit": {
-        "spot": "https://api.bybit.com/spot/v1/symbols",
-        "futures": "https://api.bybit.com/v2/public/tickers?category=linear"
+    {
+        "name": "bybit",
+        "spot_url": "https://api.bybit.com/spot/v1/symbols",
+        "future_url": "https://api.bybit.com/v2/public/tickers?category=linear",
+        "spot_parser": lambda x: {"symbol": x["name"], "priceChange": float(x["quote_volume"])} if "quote_volume" in x else None,
+        "future_parser": lambda x: {"symbol": x["symbol"], "priceChange": float(x["quote_volume"])} if "quote_volume" in x else None
     },
-    "bitget": {
-        "spot": "https://api.bitget.com/api/spot/v1/market/tickers",
-        "futures": "https://api.bitget.com/api/mix/v1/market/tickers"
+    {
+        "name": "bitget",
+        "spot_url": "https://api.bitget.com/api/spot/v1/market/tickers",
+        "future_url": "https://api.bitget.com/api/mix/v1/market/tickers?symbol=all",
+        "spot_parser": lambda x: {"symbol": x["symbol"], "priceChange": float(x["quoteVol"])} if "quoteVol" in x else None,
+        "future_parser": lambda x: {"symbol": x["symbol"], "priceChange": float(x["quoteVol"])} if "quoteVol" in x else None
     },
-    "gate": {
-        "spot": "https://api.gateio.ws/api2/1/tickers",
-        "futures": "https://api.gateio.ws/api2/1/futures/tickers"
+    {
+        "name": "gate",
+        "spot_url": "https://api.gateio.ws/api2/1/tickers",
+        "future_url": "https://api.gateio.ws/api2/1/futures/tickers",
+        "spot_parser": lambda x: {"symbol": k, "priceChange": float(v["quoteVolume"])} for k,v in x.items(),
+        "future_parser": lambda x: {"symbol": k, "priceChange": float(v["quoteVolume"])} for k,v in x.items()
     },
-    "huobi": {
-        "spot": "https://api.huobi.pro/market/tickers",
-        "futures": "https://api.hbdm.com/market/tickers"
+    {
+        "name": "huobi",
+        "spot_url": "https://api.huobi.pro/market/tickers",
+        "future_url": "https://api.hbdm.com/linear-swap-api/v1/swap_market_tickers",
+        "spot_parser": lambda x: {"symbol": x["symbol"], "priceChange": float(x["quoteVol"])} if "quoteVol" in x else None,
+        "future_parser": lambda x: {"symbol": x["symbol"], "priceChange": float(x["quoteVol"])} if "quoteVol" in x else None
     }
-}
+]
 
 async def fetch_exchange(session, url):
     try:
-        async with session.get(url, timeout=15) as resp:
+        async with session.get(url, timeout=20) as resp:
             if resp.status != 200:
                 print(f"请求出错: {resp.status}, url={url}")
                 return []
             data = await resp.json()
-            # 解析各交易所格式，返回统一格式列表 [{'symbol': 'BTC', 'amount': 1234567}]
-            result = []
-            # Binance Spot/Futures
-            if "binance" in url:
-                for item in data[:500]:
-                    symbol = item.get("symbol", "")
-                    if any(stable in symbol for stable in STABLECOINS):
-                        continue
-                    quoteVolume = float(item.get("quoteVolume", 0))
-                    result.append({"symbol": symbol.replace("USDT", ""), "amount": quoteVolume})
-            # OKX Spot/Futures
-            elif "okx" in url:
-                items = data.get("data", [])
-                for item in items[:500]:
-                    symbol = item.get("instId", "")
-                    if any(stable in symbol for stable in STABLECOINS):
-                        continue
-                    volume = float(item.get("volCcy24h", 0)) * float(item.get("last", 0))
-                    result.append({"symbol": symbol.replace("-USDT", ""), "amount": volume})
-            # 其他交易所可按类似逻辑解析
-            # TODO: 添加 Bybit, Bitget, Gate, Huobi 数据解析
-            return result
+            # 对 Gate 和 OKX 需要取 data 字段
+            if isinstance(data, dict) and "data" in data:
+                return data["data"]
+            return data
     except Exception as e:
-        print(f"{url} 解析出错: {e}")
+        print(f"请求出错: {e}, url={url}")
         return []
 
 async def fetch_top_coins():
+    results = []
     async with aiohttp.ClientSession() as session:
-        tasks = []
-        for ex, urls in EXCHANGES.items():
-            for t, url in urls.items():
-                tasks.append(fetch_exchange(session, url))
-        results = await asyncio.gather(*tasks)
-        # 扁平化列表
-        all_coins = [coin for sublist in results for coin in sublist]
-        # 去重合并同一symbol的资金
-        coin_map = {}
-        for c in all_coins:
-            symbol = c["symbol"]
-            coin_map[symbol] = coin_map.get(symbol, 0) + c["amount"]
-        # 排序
-        sorted_coins = sorted(coin_map.items(), key=lambda x: x[1], reverse=True)
-        inflow = [{"symbol": s, "amount": a} for s, a in sorted_coins[:20]]
-        outflow = [{"symbol": s, "amount": a} for s, a in sorted_coins[-20:]]
-        return inflow, outflow
+        for ex in EXCHANGES:
+            for url, parser in [(ex["spot_url"], ex["spot_parser"]),
+                                (ex["future_url"], ex["future_parser"])]:
+                data = await fetch_exchange(session, url)
+                if not data:
+                    continue
+                try:
+                    parsed = []
+                    if isinstance(data, list):
+                        for c in data:
+                            p = parser(c)
+                            if p and not any(sc in p["symbol"] for sc in STABLECOINS):
+                                parsed.append(p)
+                    elif isinstance(data, dict):
+                        for k,v in data.items():
+                            if isinstance(parser, type(lambda:0)):
+                                p = parser({k:v})
+                                if p and not any(sc in p["symbol"] for sc in STABLECOINS):
+                                    parsed.append(p)
+                    results.extend(parsed)
+                except Exception as e:
+                    print(f"{ex['name']}解析出错: {e}")
+    # 前500币种
+    results = sorted(results, key=lambda x: x["priceChange"], reverse=True)[:500]
+    return results
 
 async def fetch_and_send():
-    inflow, outflow = await fetch_top_coins()
+    coins = await fetch_top_coins()
+    if not coins:
+        await bot.send_message(chat_id=CHAT_ID, text="未获取到数据")
+        return
+    inflow = sorted([c for c in coins if c["priceChange"]>0], key=lambda x:x["priceChange"], reverse=True)[:20]
+    outflow = sorted([c for c in coins if c["priceChange"]<0], key=lambda x:x["priceChange"])[:20]
+
+    def fmt(v):
+        val = v["priceChange"]
+        if val>=1e9:
+            return f"${val/1e9:.2f}B"
+        elif val>=1e6:
+            return f"${val/1e6:.2f}M"
+        elif val>=1e3:
+            return f"${val/1e3:.2f}K"
+        return f"${val:.2f}"
+
     msg = "⏰ 资金净流入 TOP20\n"
     for i, c in enumerate(inflow, 1):
-        msg += f"{i}. {c['symbol'].upper()} {format_amount(c['amount'])}\n"
+        msg += f"{i}. {c['symbol']} {fmt(c)}\n"
 
     msg += "\n⏰ 资金净流出 TOP20\n"
     for i, c in enumerate(outflow, 1):
-        msg += f"{i}. {c['symbol'].upper()} {format_amount(c['amount'])}\n"
+        msg += f"{i}. {c['symbol']} {fmt(c)}\n"
 
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=msg)
-        print("已发送 Telegram 消息")
-    except Exception as e:
-        print("发送失败:", e)
+    await bot.send_message(chat_id=CHAT_ID, text=msg)
 
 async def main_loop():
     while True:
         await fetch_and_send()
-        await asyncio.sleep(3600)  # 每小时执行一次
+        await asyncio.sleep(3600)  # 每1小时执行一次
 
 if __name__ == "__main__":
     asyncio.run(main_loop())
