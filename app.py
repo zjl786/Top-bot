@@ -1,43 +1,47 @@
 import os
-import requests
-from telegram import Bot
-from dotenv import load_dotenv
 import time
+import requests
+from dotenv import load_dotenv
+from telegram import Bot
 
 load_dotenv()
 
-API_KEY = os.getenv("AICOIN_API_KEY")
+CMC_API_KEY = os.getenv("COINMARKETCAP_API_KEY")
 TELE_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = "https://open.aicoin.com/api/v2"
 
 bot = Bot(token=TELE_TOKEN)
+BASE_URL = "https://pro-api.coinmarketcap.com/v1"
 
-def get_coin_list():
-    url = "https://open.aicoin.com/api/v2/coin/list"
-    r = requests.get(url, headers={"Authorization": f"Bearer {API_KEY}"})
+def fetch_top_coins(limit=500, start=1):
+    url = f"{BASE_URL}/cryptocurrency/listings/latest"
+    params = {
+        "start": start,
+        "limit": limit,
+        "convert": "USD"
+    }
+    headers = {
+        "X-CMC_PRO_API_KEY": CMC_API_KEY
+    }
+    r = requests.get(url, headers=headers, params=params)
     r.raise_for_status()
-    return r.json()
+    return r.json()["data"]
 
-def get_fundflow(coin_type):
-    url = "https://open.aicoin.com/api/v2/kline/indicator"
-    params = {"coinType": coin_type, "indicator_key": "fundflow"}
-    r = requests.get(url, headers={"Authorization": f"Bearer {API_KEY}"}, params=params)
-    r.raise_for_status()
-    data = r.json()
-    return data[-1]["value"] if data else 0
+def fetch_and_send_top_flow():
+    all_coins = []
+    # CoinMarketCap 每次最多返回 500 条，前1000条需要两次请求
+    all_coins += fetch_top_coins(limit=500, start=1)
+    all_coins += fetch_top_coins(limit=500, start=501)
 
-def fetch_and_send():
-    coins = get_coin_list()
     results = []
-    for coin in coins[:200]:
-        try:
-            value = get_fundflow(coin["key"])
-            results.append((coin["name"], value))
-        except Exception:
-            continue
+    for coin in all_coins:
+        # 使用 24h 交易量变化作为资金流入/流出指标
+        volume_change = coin.get("quote", {}).get("USD", {}).get("volume_change_24h", 0)
+        results.append((coin["name"], volume_change))
 
+    # TOP20 净流入
     inflow = sorted([c for c in results if c[1] > 0], key=lambda x: x[1], reverse=True)[:20]
+    # TOP20 净流出
     outflow = sorted([c for c in results if c[1] < 0], key=lambda x: x[1])[:20]
 
     msg = "⏰ 资金净流入 TOP20\n"
@@ -52,5 +56,8 @@ def fetch_and_send():
 
 if __name__ == "__main__":
     while True:
-        fetch_and_send()
-        time.sleep(900)
+        try:
+            fetch_and_send_top_flow()
+        except Exception as e:
+            print(f"Error: {e}")
+        time.sleep(3600)  # 每1小时执行一次
