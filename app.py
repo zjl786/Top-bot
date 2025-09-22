@@ -15,6 +15,20 @@ BASE_URL = "https://pro-api.coinmarketcap.com/v1"
 
 bot = Bot(token=TELE_TOKEN)
 
+# 数字缩写格式化函数
+def format_number(num):
+    abs_num = abs(num)
+    if abs_num >= 1_000_000_000_000:
+        return f"{num/1_000_000_000_000:.2f}T"
+    elif abs_num >= 1_000_000_000:
+        return f"{num/1_000_000_000:.2f}B"
+    elif abs_num >= 1_000_000:
+        return f"{num/1_000_000:.2f}M"
+    elif abs_num >= 1_000:
+        return f"{num/1_000:.2f}K"
+    else:
+        return f"{num:.2f}"
+
 # 获取前100代币市场数据
 async def get_top_100():
     url = f"{BASE_URL}/cryptocurrency/listings/latest"
@@ -39,11 +53,11 @@ async def fetch_and_send():
     results = []
     for coin in coins:
         try:
-            name = coin["name"]
-            vol_change = coin["quote"]["USD"]["volume_change_24h"]  # 24小时成交量变化百分比
-            volume = coin["quote"]["USD"]["volume_24h"]  # 24小时成交量(USD)
-            inflow_value = volume * (vol_change / 100)  # 近似流入/流出金额
-            results.append((name, inflow_value))
+            symbol = coin["symbol"]  # 简写
+            vol_change = coin["quote"]["USD"]["volume_change_24h"]
+            volume = coin["quote"]["USD"]["volume_24h"]
+            inflow_value = volume * (vol_change / 100)  # 资金流入/流出额估算
+            results.append((symbol, inflow_value))
         except KeyError:
             continue
 
@@ -52,14 +66,13 @@ async def fetch_and_send():
     outflow = sorted([c for c in results if c[1] < 0], key=lambda x: x[1])[:20]
 
     msg = "⏰ 资金净流入 TOP20 (估算资金USD)\n"
-    for i, (name, val) in enumerate(inflow, 1):
-        msg += f"{i}. {name} +${val:,.2f}\n"
+    for i, (symbol, val) in enumerate(inflow, 1):
+        msg += f"{i}. {symbol} +${format_number(val)}\n"
 
     msg += "\n⏰ 资金净流出 TOP20 (估算资金USD)\n"
-    for i, (name, val) in enumerate(outflow, 1):
-        msg += f"{i}. {name} ${val:,.2f}\n"
+    for i, (symbol, val) in enumerate(outflow, 1):
+        msg += f"{i}. {symbol} ${format_number(val)}\n"
 
-    # ✅ 异步调用必须 await
     await bot.send_message(chat_id=CHAT_ID, text=msg)
 
 # 主循环
