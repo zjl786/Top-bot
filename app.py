@@ -9,18 +9,18 @@ load_dotenv()
 API_KEY = os.getenv("AICOIN_API_KEY")
 TELE_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = "https://open.aicoin.com/api/v2"  # 替换成实际接口地址
+BASE_URL = "https://open.aicoin.com/api/v2"
 
 bot = Bot(token=TELE_TOKEN)
 
 def get_coin_list():
-    url = f"{BASE_URL}/coin/list"
+    url = "https://open.aicoin.com/api/v2/coin/list"
     r = requests.get(url, headers={"Authorization": f"Bearer {API_KEY}"})
     r.raise_for_status()
     return r.json()
 
 def get_fundflow(coin_type):
-    url = f"{BASE_URL}/kline/indicator"
+    url = "https://open.aicoin.com/api/v2/kline/indicator"
     params = {"coinType": coin_type, "indicator_key": "fundflow"}
     r = requests.get(url, headers={"Authorization": f"Bearer {API_KEY}"}, params=params)
     r.raise_for_status()
@@ -53,4 +53,4 @@ def fetch_and_send():
 if __name__ == "__main__":
     while True:
         fetch_and_send()
-        time.sleep(900)  # 每15分钟执行一次
+        time.sleep(900)
