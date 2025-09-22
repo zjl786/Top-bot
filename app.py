@@ -1,47 +1,62 @@
 import os
 import time
 import requests
-from dotenv import load_dotenv
+import asyncio
 from telegram import Bot
+from dotenv import load_dotenv
 
 load_dotenv()
 
-CMC_API_KEY = os.getenv("COINMARKETCAP_API_KEY")
 TELE_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CMC_API_KEY = os.getenv("COINMARKETCAP_API_KEY")
 
 bot = Bot(token=TELE_TOKEN)
 BASE_URL = "https://pro-api.coinmarketcap.com/v1"
 
-def fetch_top_coins(limit=500, start=1):
+HEADERS = {
+    "Accepts": "application/json",
+    "X-CMC_PRO_API_KEY": CMC_API_KEY
+}
+
+def get_top_coins(limit=1000):
     url = f"{BASE_URL}/cryptocurrency/listings/latest"
     params = {
-        "start": start,
+        "start": "1",
         "limit": limit,
         "convert": "USD"
     }
-    headers = {
-        "X-CMC_PRO_API_KEY": CMC_API_KEY
-    }
-    r = requests.get(url, headers=headers, params=params)
+    r = requests.get(url, headers=HEADERS, params=params)
     r.raise_for_status()
-    return r.json()["data"]
+    data = r.json()
+    return data["data"]
 
-def fetch_and_send_top_flow():
-    all_coins = []
-    # CoinMarketCap 每次最多返回 500 条，前1000条需要两次请求
-    all_coins += fetch_top_coins(limit=500, start=1)
-    all_coins += fetch_top_coins(limit=500, start=501)
+def get_fundflow(coin_id):
+    # CoinMarketCap 没有直接资金流入API，这里用 24h 交易量变化作为替代
+    url = f"{BASE_URL}/cryptocurrency/quotes/latest"
+    params = {"id": coin_id, "convert": "USD"}
+    r = requests.get(url, headers=HEADERS, params=params)
+    r.raise_for_status()
+    data = r.json()
+    quote = data["data"][str(coin_id)]["quote"]["USD"]
+    # 使用 24h volume_change_pct 作为“资金流指标”近似
+    value = quote.get("volume_change_24h", 0)
+    return value
 
+async def send_telegram(msg):
+    await bot.send_message(chat_id=CHAT_ID, text=msg)
+
+def fetch_and_send():
+    coins = get_top_coins(limit=1000)
     results = []
-    for coin in all_coins:
-        # 使用 24h 交易量变化作为资金流入/流出指标
-        volume_change = coin.get("quote", {}).get("USD", {}).get("volume_change_24h", 0)
-        results.append((coin["name"], volume_change))
+    for coin in coins:
+        try:
+            value = get_fundflow(coin["id"])
+            results.append((coin["name"], value))
+        except Exception:
+            continue
 
-    # TOP20 净流入
     inflow = sorted([c for c in results if c[1] > 0], key=lambda x: x[1], reverse=True)[:20]
-    # TOP20 净流出
     outflow = sorted([c for c in results if c[1] < 0], key=lambda x: x[1])[:20]
 
     msg = "⏰ 资金净流入 TOP20\n"
@@ -52,12 +67,7 @@ def fetch_and_send_top_flow():
     for i, (name, val) in enumerate(outflow, 1):
         msg += f"{i}. {name} {val:,.2f}\n"
 
-    bot.send_message(chat_id=CHAT_ID, text=msg)
+    asyncio.run(send_telegram(msg))
 
 if __name__ == "__main__":
-    while True:
-        try:
-            fetch_and_send_top_flow()
-        except Exception as e:
-            print(f"Error: {e}")
-        time.sleep(3600)  # 每1小时执行一次
+    fetch_and_send()
