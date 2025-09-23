@@ -62,9 +62,13 @@ def job():
         for s, v_pct, p_pct, dv in top_losers:
             message += f"{s}: 价格 {p_pct:.2f}% | 成交量 {v_pct:.1f}% (ΔVol {dv/1e6:.2f}M)\n"
 
-        # 4️⃣ 发到 Telegram
-        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                     params={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        # 4️⃣ # 发送到 Telegram
+        resp = requests.get(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        params={"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        )
+        print(resp.status_code, resp.text)  # 打印调试信息
+
 
     previous_data = current_data
 
